@@ -1,4 +1,4 @@
-# LASSI entrance-light demo
+# entrance-light demo
 
 This first-stage demo controls a WS2812B strip from a Raspberry Pi web page.
 The ESP32 generates all animations locally, so network traffic only changes
