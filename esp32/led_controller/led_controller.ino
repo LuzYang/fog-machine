@@ -1,99 +1,102 @@
 #include <FastLED.h>
-#include <WiFi.h>
-#include <WebServer.h>
 
-// ================= Hardware configuration / 硬件配置 =================
 #define DATA_PIN 18
 #define NUM_LEDS 30
 #define LED_TYPE WS2812B
 #define COLOR_ORDER GRB
-
-// Replace these values before uploading. / 烧录前请填写树莓派热点或路由器信息。
-const char* WIFI_SSID = "YOUR_WIFI_NAME";
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+#include <ArduinoJson.h>
 
 CRGB leds[NUM_LEDS];
-WebServer server(80);
 
-enum class Effect { BLACKOUT, SOLID, FLASH, PULSE, CHASE };
+// 程序支持的效果
+enum class Effect {
+  BLACKOUT,
+  SOLID,
+  FLASH,
+  PULSE,
+  CHASE
+};
 
+// 当前灯光状态
 struct LedState {
-  Effect effect = Effect::BLACKOUT;
+  Effect effect = Effect::FLASH;
   CRGB color = CRGB::Red;
   uint8_t brightness = 80;
   uint16_t speedMs = 500;
   bool reverse = false;
-  uint8_t width = 4;
+	uint8_t width = 4;
 };
 
 LedState state;
+
+// 保存当前效果开始时的时间
 uint32_t effectStartedAt = 0;
 
-// Keep a number inside a safe range. / 将数值限制在安全范围内。
-long clampValue(long value, long minimum, long maximum) {
-  return max(minimum, min(value, maximum));
-}
-
-const char* effectName(Effect effect) {
-  switch (effect) {
-    case Effect::BLACKOUT: return "blackout";
-    case Effect::SOLID: return "solid";
-    case Effect::FLASH: return "flash";
-    case Effect::PULSE: return "pulse";
-    case Effect::CHASE: return "chase";
-  }
-  return "blackout";
-}
-
-bool parseEffect(const String& value, Effect& output) {
-  if (value == "blackout") output = Effect::BLACKOUT;
-  else if (value == "solid") output = Effect::SOLID;
-  else if (value == "flash") output = Effect::FLASH;
-  else if (value == "pulse") output = Effect::PULSE;
-  else if (value == "chase") output = Effect::CHASE;
-  else return false;
-  return true;
-}
-
-void sendState() {
-  String json = "{\"effect\":\"" + String(effectName(state.effect)) + "\",";
-  json += "\"r\":" + String(state.color.r) + ",";
-  json += "\"g\":" + String(state.color.g) + ",";
-  json += "\"b\":" + String(state.color.b) + ",";
-  json += "\"brightness\":" + String(state.brightness) + ",";
-  json += "\"speed_ms\":" + String(state.speedMs) + ",";
-  json += "\"direction\":\"" + String(state.reverse ? "reverse" : "forward") + "\",";
-  json += "\"width\":" + String(state.width) + "}";
-  server.send(200, "application/json", json);
-}
-
-void handleSetState() {
-  Effect nextEffect = state.effect;
-  if (server.hasArg("effect") && !parseEffect(server.arg("effect"), nextEffect)) {
-    server.send(400, "application/json", "{\"error\":\"unknown effect\"}");
+// Receive one JSON object per line over USB serial. / 每行一个 JSON 命令。
+void handleSetState(const char* command) {
+  JsonDocument doc;
+  if (deserializeJson(doc, command) || !doc.is<JsonObject>()) {
+    Serial.println("ERR invalid JSON");
     return;
   }
-
+  const char* effect = doc["effect"] | "";
+  Effect nextEffect;
+  if (strcmp(effect, "blackout") == 0) nextEffect = Effect::BLACKOUT;
+  else if (strcmp(effect, "solid") == 0) nextEffect = Effect::SOLID;
+  else if (strcmp(effect, "flash") == 0) nextEffect = Effect::FLASH;
+  else if (strcmp(effect, "pulse") == 0) nextEffect = Effect::PULSE;
+  else if (strcmp(effect, "chase") == 0) nextEffect = Effect::CHASE;
+  else { Serial.println("ERR unknown effect"); return; }
+  const char* keys[] = {"r", "g", "b", "brightness", "speed_ms", "width"};
+  const int minimum[] = {0, 0, 0, 0, 100, 1};
+  const int maximum[] = {255, 255, 255, 255, 5000, 255};
+  for (int i = 0; i < 6; ++i) {
+    if (!doc[keys[i]].is<int>() || doc[keys[i]].as<int>() < minimum[i] ||
+        doc[keys[i]].as<int>() > maximum[i]) {
+      Serial.println("ERR invalid parameters");
+      return;
+    }
+  }
+  const char* direction = doc["direction"] | "";
+  if (strcmp(direction, "forward") != 0 && strcmp(direction, "reverse") != 0) {
+    Serial.println("ERR invalid direction");
+    return;
+  }
   state.effect = nextEffect;
-  if (server.hasArg("r")) state.color.r = clampValue(server.arg("r").toInt(), 0, 255);
-  if (server.hasArg("g")) state.color.g = clampValue(server.arg("g").toInt(), 0, 255);
-  if (server.hasArg("b")) state.color.b = clampValue(server.arg("b").toInt(), 0, 255);
-  if (server.hasArg("brightness")) {
-    state.brightness = clampValue(server.arg("brightness").toInt(), 0, 255);
-  }
-  if (server.hasArg("speed_ms")) {
-    // 100 ms minimum prevents unsafe high-frequency flashing. / 最短100毫秒，限制高速频闪。
-    state.speedMs = clampValue(server.arg("speed_ms").toInt(), 100, 5000);
-  }
-  if (server.hasArg("direction")) state.reverse = server.arg("direction") == "reverse";
-  if (server.hasArg("width")) state.width = clampValue(server.arg("width").toInt(), 1, NUM_LEDS);
-
+  state.color = CRGB(doc["r"].as<int>(), doc["g"].as<int>(), doc["b"].as<int>());
+  state.brightness = doc["brightness"].as<int>();
+  state.speedMs = doc["speed_ms"].as<int>();
+  state.width = min(doc["width"].as<int>(), NUM_LEDS);
+  state.reverse = strcmp(direction, "reverse") == 0;
   effectStartedAt = millis();
-  sendState();
+  Serial.print("OK ");
+  Serial.println(effect);
 }
 
-void updateEffect(uint32_t now) {
-  const uint32_t elapsed = now - effectStartedAt;
+void readSerialCommands() {
+  static char buffer[384];
+  static size_t length = 0;
+  static bool overflow = false;
+  // Bounded, nonblocking reads keep animations running. / 非阻塞读取。
+  for (uint16_t count = 0; count < 384 && Serial.available(); ++count) {
+    const char character = Serial.read();
+    if (character == '\n') {
+      buffer[length] = '\0';
+      if (overflow) Serial.println("ERR command too long");
+      else if (length != 0) handleSetState(buffer);
+      length = 0;
+      overflow = false;
+    } else if (character != '\r' && !overflow) {
+      if (length < sizeof(buffer) - 1) buffer[length++] = character;
+      else overflow = true;
+    }
+  }
+}
+
+// 根据当前时间更新灯效
+void updateEffect(uint32_t now){
+   // 效果已经运行了多久
+  uint32_t elapsed = now - effectStartedAt;
   FastLED.setBrightness(state.brightness);
 
   switch (state.effect) {
@@ -142,33 +145,18 @@ void updateEffect(uint32_t now) {
   FastLED.show();
 }
 
+
+
 void setup() {
   Serial.begin(115200);
-  FastLED.addLeds<LED_TYPE, DATA_PIN, COLOR_ORDER>(leds, NUM_LEDS);
-  FastLED.setBrightness(state.brightness);
-  FastLED.clear(true);
-
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.print("Connecting to Wi-Fi / 正在连接 Wi-Fi");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println();
-  Serial.print("ESP32 address / ESP32 地址: http://");
-  Serial.println(WiFi.localIP());
-
-  server.on("/api/state", HTTP_GET, sendState);
-  server.on("/api/state", HTTP_POST, handleSetState);
-  server.onNotFound([]() {
-    server.send(404, "application/json", "{\"error\":\"not found\"}");
-  });
-  server.begin();
+  FastLED.addLeds<LED_TYPE, DATA_PIN, COLOR_ORDER>(
+    leds,
+    NUM_LEDS
+  );
 }
 
 void loop() {
-  server.handleClient();
+  readSerialCommands();
   updateEffect(millis());
-  delay(5);  // Yield to Wi-Fi; this is not an animation delay. / 给Wi-Fi任务让出运行时间。
+  
 }

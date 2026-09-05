@@ -1,13 +1,57 @@
 import os
 
-import requests
+import json
+import threading
+import time
+
+import serial
 from flask import Flask, jsonify, render_template, request
 
 
 app = Flask(__name__)
-ESP32_BASE_URL = os.getenv("ESP32_BASE_URL", "http://192.168.1.50")
+ESP32_SERIAL_PORT = os.getenv("ESP32_SERIAL_PORT", "/dev/ttyACM0")
+serial_lock = threading.Lock()
+serial_connection = None
 
 ALLOWED_EFFECTS = {"blackout", "solid", "flash", "pulse", "chase"}
+
+
+def send_state(parameters):
+    """Keep USB open and match each command with its acknowledgement."""
+    global serial_connection
+    command = (json.dumps(parameters, separators=(",", ":")) + "\n").encode("ascii")
+    with serial_lock:
+        try:
+            if serial_connection is None:
+                serial_connection = serial.Serial(
+                    ESP32_SERIAL_PORT, 115200, timeout=0.2, write_timeout=1.5,
+                    exclusive=True,
+                )
+                # USB UART boards may reset when opened.
+                time.sleep(2)
+            serial_connection.reset_input_buffer()
+            serial_connection.write(command)
+            deadline = time.monotonic() + 1.5
+            reply = b""
+            while time.monotonic() < deadline:
+                reply += serial_connection.read_until(b"\n")
+                if not reply.endswith(b"\n"):
+                    continue
+                line = reply.decode("ascii", errors="replace").strip()
+                reply = b""
+                if line == f"OK {parameters['effect']}":
+                    return {"ok": True, "effect": parameters["effect"]}
+                if line.startswith("ERR "):
+                    raise serial.SerialException(line)
+            raise serial.SerialException("ESP32 USB response timed out")
+        except (serial.SerialException, OSError):
+            if serial_connection is not None:
+                try:
+                    serial_connection.close()
+                except OSError:
+                    pass
+                serial_connection = None
+            raise
 
 
 def bounded_integer(data, name, minimum, maximum, default):
@@ -26,8 +70,10 @@ def index():
 @app.post("/api/led")
 def set_led():
     data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify(error="expected a JSON object"), 400
     effect = data.get("effect", "solid")
-    if effect not in ALLOWED_EFFECTS:
+    if not isinstance(effect, str) or effect not in ALLOWED_EFFECTS:
         return jsonify(error="unknown effect"), 400
 
     try:
@@ -45,16 +91,11 @@ def set_led():
         return jsonify(error=str(error)), 400
 
     try:
-        response = requests.post(
-            f"{ESP32_BASE_URL}/api/state",
-            params=parameters,
-            timeout=1.5,
-        )
-        response.raise_for_status()
-    except requests.RequestException as error:
-        return jsonify(error="ESP32 is unavailable", detail=str(error)), 502
+        response = send_state(parameters)
+    except (serial.SerialException, OSError) as error:
+        return jsonify(error="ESP32 USB is unavailable", detail=str(error)), 502
 
-    return jsonify(response.json())
+    return jsonify(response)
 
 
 if __name__ == "__main__":

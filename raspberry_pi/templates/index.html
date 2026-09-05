@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>LASSI Entrance Lights</title>
+  <title>Entrance Lights</title>
   <style>
     :root { color-scheme: dark; font-family: system-ui, sans-serif; }
     body { max-width: 680px; margin: 0 auto; padding: 24px; background: #0b0b0d; color: #f6f6f6; }
@@ -20,25 +20,25 @@
   </style>
 </head>
 <body>
-  <h1>LASSI 灯带控制</h1>
+  <h1>LASSI LED Strip Control</h1>
   <div class="panel">
     <div class="effects">
-      <button data-effect="solid">常亮 Solid</button>
-      <button data-effect="pulse">脉冲 Pulse</button>
-      <button data-effect="flash">闪烁 Flash</button>
-      <button data-effect="chase">流水 Chase</button>
-      <button class="blackout" data-effect="blackout">立即关灯 BLACKOUT</button>
+      <button data-effect="solid">Solid</button>
+      <button data-effect="pulse">Pulse</button>
+      <button data-effect="flash">Flash</button>
+      <button data-effect="chase">Chase</button>
+      <button class="blackout" data-effect="blackout">Blackout — Turn Lights Off</button>
     </div>
 
-    <label>颜色 Color <input id="color" type="color" value="#ff0000"><span></span></label>
-    <label>亮度 Brightness <input id="brightness" type="range" min="0" max="255" value="80"><output>80</output></label>
-    <label>周期 Speed <input id="speed" type="range" min="100" max="2000" step="50" value="500"><output>500</output></label>
-    <label>流水长度 Width <input id="width" type="range" min="1" max="15" value="4"><output>4</output></label>
-    <label>方向 Direction
-      <select id="direction"><option value="forward">向前 Forward</option><option value="reverse">反向 Reverse</option></select>
+    <label>Color <input id="color" type="color" value="#ff0000"><span></span></label>
+    <label>Brightness <input id="brightness" type="range" min="0" max="255" value="80"><output>80</output></label>
+    <label>Period (ms) <input id="speed" type="range" min="100" max="2000" step="50" value="500"><output>500</output></label>
+    <label>Chase Width <input id="width" type="range" min="1" max="15" value="4"><output>4</output></label>
+    <label>Direction
+      <select id="direction"><option value="forward">Forward</option><option value="reverse">Reverse</option></select>
       <span></span>
     </label>
-    <p id="status">请选择一种效果。</p>
+    <p id="status">Select a lighting effect.</p>
   </div>
 
   <script>
@@ -66,7 +66,7 @@
         direction: document.querySelector("#direction").value
       };
 
-      status.textContent = "正在发送…";
+      status.textContent = "Sending…";
       try {
         const response = await fetch("/api/led", {
           method: "POST",
@@ -74,13 +74,13 @@
           body: JSON.stringify(payload)
         });
         const result = await response.json();
-        if (!response.ok) throw new Error(result.error || "request failed");
-        status.textContent = `已启用 ${result.effect}`;
+        if (!response.ok) throw new Error(result.error || "Request failed");
+        status.textContent = `Active effect: ${result.effect}`;
         document.querySelectorAll("[data-effect]").forEach(button => {
           button.classList.toggle("active", button.dataset.effect === result.effect);
         });
       } catch (error) {
-        status.textContent = `错误：${error.message}`;
+        status.textContent = `Error: ${error.message}`;
       }
     }
 
